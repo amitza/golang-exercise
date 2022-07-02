@@ -1,13 +1,36 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
+	"os"
 	"runtime"
 	"sync"
+	"testing"
 	"time"
 )
+
+func hello(w http.ResponseWriter, req *http.Request) {
+	fmt.Fprintf(w, "hello\n")
+}
+
+func headers(w http.ResponseWriter, req *http.Request) {
+	for name, headers := range req.Header {
+		for _, h := range headers {
+			fmt.Fprintf(w, "%v: %v\n", name, h)
+		}
+	}
+}
+
+func TestPlus(t *testing.T) {
+	ans := plus(1, 1)
+	if ans != 2 {
+		t.Error("1 + 1 is 2!", ans)
+	}
+}
 
 func waitGroup(id int) {
 	fmt.Printf("Worker %d starting\n", id)
@@ -655,4 +678,64 @@ func main() {
 		}()
 	}
 	wg.Wait()
+
+	requests := make(chan int, 5)
+	for i := 1; i <= 5; i++ {
+		requests <- i
+	}
+	close(requests)
+
+	limiter := time.Tick(200 * time.Millisecond)
+
+	for req := range requests {
+		<-limiter
+		fmt.Println("requests", req, time.Now())
+	}
+
+	burstyLimiter := make(chan time.Time, 3)
+
+	for i := 0; i < 3; i++ {
+		burstyLimiter <- time.Now()
+	}
+
+	go func() {
+		for t := range time.Tick(200 * time.Millisecond) {
+			burstyLimiter <- t
+		}
+	}()
+
+	burstyRequests := make(chan int, 5)
+	for i := 1; i <= 5; i++ {
+		burstyRequests <- i
+	}
+	close(burstyRequests)
+	for req := range burstyRequests {
+		<-burstyLimiter
+		fmt.Println("request", req, time.Now())
+	}
+
+	dat, err := os.ReadFile("/home/aamita/git/golang-exercise/golang-exercise.go")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(dat))
+
+	resp, err := http.Get("https://gobyexample.com")
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	fmt.Println("Response status", resp.Status)
+	scanner := bufio.NewScanner(resp.Body)
+
+	for i:= 0; scanner.Scan() && i < 5; i++ {
+		fmt.Println(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		panic(err)
+	}
+
+	http.HandleFunc("/hello", hello)
+	http.HandleFunc("/headers", headers)
+	http.ListenAndServe(":8090", nil)
 }
