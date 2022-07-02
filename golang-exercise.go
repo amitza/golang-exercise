@@ -1,10 +1,52 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 	"time"
 )
+
+func waitGroup(id int) {
+	fmt.Printf("Worker %d starting\n", id)
+	time.Sleep(time.Second)
+	fmt.Printf("Worker %d done\n", id)
+}
+
+func workerPool(id int, jobs <-chan int, results chan<- int) {
+	for j := range jobs {
+		fmt.Println("worker", id, "started job", j)
+		time.Sleep(time.Second)
+		fmt.Println("worker", id, "finished job", j)
+		results <- j * 2
+	}
+}
+
+func ping(pings chan<- string, msg string) {
+	pings <- msg
+}
+
+func pong(pings <-chan string, pongs chan<- string) {
+	msg := <-pings
+	pongs <- msg
+}
+
+func worker(done chan bool) {
+	fmt.Print("working...")
+	time.Sleep(time.Second)
+	fmt.Println("done")
+
+	done <- true
+}
+
+func routine(from string) {
+	for i := 0; i < 3; i++ {
+		fmt.Println(from, ":", i)
+		fmt.Println("num of routines", runtime.NumGoroutine())
+	}
+}
 
 func plus(a int, b int) int {
 	return a + b
@@ -130,6 +172,29 @@ func (lst *List[T]) GetAll() []T {
 		elemes = append(elemes, e.val)
 	}
 	return elemes
+}
+
+func f1(arg int) (int, error) {
+	if arg == 42 {
+		return -1, errors.New("Can't do 42")
+	}
+	return arg + 3, nil
+}
+
+type argError struct {
+	arg  int
+	prob string
+}
+
+func (e *argError) Error() string {
+	return fmt.Sprintf("%d - %s", e.arg, e.prob)
+}
+
+func f2(arg int) (int, error) {
+	if arg == 42 {
+		return -1, &argError{arg, "Can't work with it"}
+	}
+	return arg + 3, nil
 }
 
 const s string = "constant"
@@ -389,4 +454,205 @@ func main() {
 
 	var mmm = map[int]string{1: "2", 2: "4", 4: "8"}
 	fmt.Println("keys:", MapKeys(mmm))
+
+	for _, i := range []int{7, 42} {
+		if r, e := f1(i); e != nil {
+			fmt.Println("f1 failed:", e)
+		} else {
+			fmt.Println("f1 worked:", r)
+		}
+	}
+
+	for _, i := range []int{7, 42} {
+		if r, e := f2(i); e != nil {
+			fmt.Println("f2 failed:", e)
+		} else {
+			fmt.Println("f2 worked:", r)
+		}
+	}
+	_, e := f2(42)
+	if ae, ok := e.(*argError); ok {
+		fmt.Println(ae.arg)
+		fmt.Println(ae.prob)
+	}
+
+	routine("direct")
+	go routine("goroutine")
+	go func(msg string) {
+		fmt.Println(msg)
+	}("going")
+	time.Sleep(time.Second)
+	fmt.Println("done")
+
+	messages := make(chan string, 2)
+	go func() {
+		messages <- "ping"
+		messages <- "pong"
+	}()
+	msg := <-messages
+	fmt.Println(msg)
+	msg = <-messages
+	fmt.Println(msg)
+
+	done := make(chan bool, 1)
+	go worker(done)
+	<-done
+
+	pings := make(chan string, 1)
+	pongs := make(chan string, 1)
+	ping(pings, "passed message")
+	pong(pings, pongs)
+	fmt.Println(<-pongs)
+
+	c1 := make(chan string)
+	c2 := make(chan string)
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		c1 <- "one"
+	}()
+
+	go func() {
+		time.Sleep(2 * time.Second)
+		c1 <- "two"
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case ms1 := <-c1:
+			fmt.Println("received", ms1)
+		case ms2 := <-c2:
+			fmt.Println("recieved", ms2)
+		}
+	}
+
+	c1 = make(chan string, 1)
+	go func() {
+		time.Sleep(2 * time.Second)
+		c1 <- "result 1"
+	}()
+
+	select {
+	case res := <-c1:
+		fmt.Println(res)
+	case <-time.After(1 * time.Second):
+		fmt.Println("timeout 1")
+	}
+
+	c2 = make(chan string, 1)
+	go func() {
+		time.Sleep(2 * time.Second)
+		c2 <- "result 2"
+	}()
+	select {
+	case res := <-c2:
+		fmt.Println(res)
+	case <-time.After(3 * time.Second):
+		fmt.Println("timeout 2")
+	}
+
+	messages = make(chan string)
+	signals := make(chan bool)
+
+	select {
+	case msg := <-messages:
+		fmt.Println("recived message", msg)
+	default:
+		fmt.Println("No message received")
+	}
+
+	msg = "hi"
+	select {
+	case messages <- msg:
+		fmt.Println("sent message", msg)
+	default:
+		fmt.Println("no message sent")
+	}
+
+	select {
+	case msg := <-messages:
+		fmt.Println("received message", msg)
+	case sig := <-signals:
+		fmt.Println("received signal", sig)
+	default:
+		fmt.Println("no activity")
+	}
+
+	jobs := make(chan int, 5)
+	done = make(chan bool)
+
+	go func() {
+		for {
+			j, more := <-jobs
+			if more {
+				fmt.Println("recevied job", j)
+			} else {
+				fmt.Println("recived all jobs")
+				done <- true
+				return
+			}
+		}
+	}()
+
+	for j := 1; j <= 3; j++ {
+		jobs <- j
+		fmt.Println("sent job", j)
+	}
+	close(jobs)
+	fmt.Println("sent all jobs")
+	<-done
+
+	queue := make(chan string, 2)
+	queue <- "one"
+	queue <- "two"
+	close(queue)
+
+	for elem := range queue {
+		fmt.Println(elem)
+	}
+
+	timer1 := time.NewTimer(2 * time.Second)
+
+	<-timer1.C
+	fmt.Println("Timer 1 fired")
+
+	timer2 := time.NewTimer(time.Second)
+	go func() {
+		<-timer2.C
+		fmt.Println("Timer 2 fired")
+	}()
+	stop2 := timer2.Stop()
+	if stop2 {
+		fmt.Println("Timer 2 stopped")
+	}
+	time.Sleep(2 * time.Second)
+
+	const numJobs = 5
+	jobs = make(chan int, numJobs)
+	results := make(chan int, numJobs)
+
+	for w := 1; w <= 3; w++ {
+		go workerPool(w, jobs, results)
+	}
+
+	for j := 1; j <= numJobs; j++ {
+		jobs <- j
+	}
+	close(jobs)
+
+	for a := 1; a <= numJobs; a++ {
+		<-results
+	}
+
+	var wg sync.WaitGroup
+
+	for i := 1; i <= 5; i++ {
+		wg.Add(1)
+		i := i
+		go func() {
+			defer wg.Done()
+			waitGroup(i)
+		}()
+	}
+	wg.Wait()
 }
